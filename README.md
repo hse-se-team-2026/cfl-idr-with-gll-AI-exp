@@ -8,7 +8,12 @@ A Kotlin implementation of CFL-based approximation methods for interleaved Dyck 
 
 Interleaved Dyck Reachability is a fundamental problem in static program analysis where path constraints are expressed as the shuffle of two Dyck languages - typically representing context sensitivity (parentheses) and field sensitivity (brackets). While this formulation enables high-precision analyses, the problem is known to be undecidable in general, and thus existing approaches resort to clever overapproximations.
 
-This project implements approximation techniques based on the research paper ["CFL-based methods for approximating interleaved Dyck reachability" (Conrado & Pavlogiannis, 2025)](https://www.researchgate.net/publication/390804794_CFL-based_methods_for_approximating_interleaved_Dyck_reachability), which transforms the undecidable problem into a series of tractable CFL reachability problems solvable via the GLL-based algorithm from the [UCFS project](https://github.com/FormalLanguageConstrainedPathQuerying/UCFS).
+This project implements approximation techniques based on the research paper ["CFL-based methods for approximating interleaved Dyck reachability" (Conrado & Pavlogiannis, 2025)](https://www.researchgate.net/publication/390804794_CFL-based_methods_for_approximating_interleaved_Dyck_reachability), which transforms the undecidable problem into a series of tractable CFL reachability problems.
+
+To evaluate these methods, two implementations with different algorithmic approaches were developed:
+
+- **Kotlin implementation (this repository):** Uses an explicit graph-traversal approach with the GLL-based CFL reachability solver from [UCFS](https://github.com/FormalLanguageConstrainedPathQuerying/UCFS).
+- **C implementation ([`cfl-idr-with-la`](https://github.com/RodionovMaxim05/cfl-idr-with-la)):** Uses a linear-algebra-based approach with [the CFL reachability solver from LAGraph](https://github.com/SparseLinearAlgebra/LAGraph/blob/homka122/all_algorithms_benchmark/include/LAGraphX.h#L1117).
 
 ### Supported Grammars
 
@@ -166,7 +171,7 @@ The following conventions are used:
 2. **`OOM`** (Out of Memory) - the tool ran out of 128 GiB of RAM;
 3. **`SOF`** (Stack Overflow Error) - the tool ran out of 12 MiB of stack space.
 
-## Dataset Characteristics
+## Dataset Characteristics & Evaluated Methods
 
 All graphs were obtained from publicly available sources:
 
@@ -244,14 +249,34 @@ Below are the key properties of each graph. $|V|$ and $|E|$ represent the number
 | reactor                       | 26 999  | 84 197    | 1 567  | 414   |
 | reactor_slx                   | 26 999  | 84 197    | 0      | 414   | -->
 
-> [!IMPORTANT]
-> **Important warning about the measurement conditions**
->
-> Performance measurements for the `taint` and `taint_additional` datasets were performed on an [optimized version of UCFS](libs/solver-new.jar) - the optimization code is available in [PR](https://github.com/FormalLanguageConstrainedPathQuerying/UCFS/pull/50).
-<!-- >
-> All other measurements (for the `valueflow` and `graphs_unlimited` sets) were performed on the [original UCFS version](libs/solver-original.jar) without optimizations - the original code is available [here](https://github.com/FormalLanguageConstrainedPathQuerying/UCFS/tree/e9c92ba1a85e95e941d04163cd4b55f50686c1f7). -->
+#### Evaluated Methods and Solver Composition
+
+Methods (`DEF`, `PAR`, `PAR2E`, etc.) represent high-level algorithms designed for reachability analysis. Each method performs analysis by invoking an underlying CFL reachability solver one or more times using a set of underlying core grammars (for simplicity, we will call them `default_grammar`, `parity_grammar`, `se_grammar`, etc.) as building blocks until algorithm convergence.
+
+The structural composition of each method, specifying which grammars it executes and its iteration pattern, is defined as follows:
+
+| Method     | Composition                                                              |
+|------------|--------------------------------------------------------------------------|
+| `DEF`      | 2\*`default_grammar`                                                             |
+| `PAR`      | 2\*`parity_grammar`                                                              |
+| `PAR2`     | 2\*`parity2_grammar`                                                             |
+| `PARUnl`   | 2\*`parity_grammar` + `project_grammar`                                                  |
+| `PARErase` | 2\*`parity_grammar`​ + `exclude_grammar` \* $n_b$                                         |
+| `PAR2E`    | 2\*`se_grammar`                                                                  |
+| `COM`      | 2\*`se_grammar` + `project_grammar` + `exclude_grammar` \* $n_b$                                 |
+| `PARD`     | `PAR`, then `DEF` \* $n_{uncertain}$                                 |
+| `COMD`     | `COM`, then `DEF` \* $n_{uncertain}$, then `COM` \* $n_{uncertain}'$ |
+
+Here $n_{uncertain} = |R_{over}| − |R_{under}|$ is the number of pairs in the over-approximation not confirmed by the under-approximation after the initial global pass, and $n_{uncertain}' \leq n_{uncertain}$​ is the number of pairs remaining after the default per-pair pass. These quantities depend on the graph and grow with graph size, making `PARD` and especially `COMD` the most expensive methods on large inputs.
 
 ## Implementation Comparison: C vs Kotlin vs Go
+
+> [!IMPORTANT]
+> **Measurement Conditions for Kotlin Solver**
+>
+> Performance measurements for the Kotlin implementation on the the `taint` and `taint_additional` datasets were performed on an [optimized version of UCFS](libs/solver-new.jar) - the optimization code is available in [PR](https://github.com/FormalLanguageConstrainedPathQuerying/UCFS/pull/50).
+<!-- >
+> All other measurements (for the `valueflow` and `graphs_unlimited` sets) were performed on the [original UCFS version](libs/solver-original.jar) without optimizations - the original code is available [here](https://github.com/FormalLanguageConstrainedPathQuerying/UCFS/tree/e9c92ba1a85e95e941d04163cd4b55f50686c1f7). -->
 
 ### Methodology and Statistical Reliability
 
@@ -283,45 +308,53 @@ The following charts compare the execution times across the Go, Kotlin, and C im
 | **Grammar `COM`:**                                              | **Grammar `COMD`:**                                           |
 | <img alt="COM" src="benchmark/results/taint/all_time_comparison.png">          | <img alt="COMD" src="benchmark/results/taint/on-demand_time_comparison.png"> |
 
-#### Go analysis
+#### Baseline Comparison (Kotlin and C vs Go)
 
-- **C vs Go:** The C implementation outperforms Go across all grammars, with speedups ranging from 14× (`PARErase`) to 38× (`PAR2`). However, there are six benchmarks where the Go implementation outperforms C. The reasons for this behavior will be discussed in the next section.
-- **Kotlin vs Go:** The Kotlin (using GLL-based algorithm) implementation is faster than the original Go implementation for almost all grammars and graphs. The exceptions are limited to 1 graphs when using the `PARUnl` grammar.
+Both newly developed implementations significantly outperform the reference Go baseline:
 
-#### C vs Kotlin analysis
+- **C vs Go:** The C implementation outperforms Go across all grammars, achieving an average speedup of 17.8×, with speedups ranging from 8× (`COMD`) to 38× (`PAR2`).
+- **Kotlin vs Go:** The Kotlin implementation achieves an average speedup of 12.4× over Go across all grammars, with speedups ranging from 1.4× (`PARUnl`) to 34× (`PAR2`).
 
-**Grammar Complexity and Method Cost**
-The performance of the C implementation is directly determined by the number of grammar rules passed to the CFL reachability solver at each invocation, since the per-invocation cost scales with grammar size. The individual grammars used across all methods and their rule counts are as follows:
+#### Algorithmic and Architectural Analysis (Kotlin vs C)
 
-| Grammar   | Standart number of rules in C implementation |
-|-----------|----------------------------------------------|
-| `project` | 8                                            |
-| `default` | 10                                           |
-| `parity`  | 21                                           |
-| `parity2` | 71                                           |
-| `exclude` | 81                                           |
-| `se`      | 1428                                         |
+Neither implementation dominates universally. The relative performance of the C (matrix-based) and Kotlin (GLL-based) implementations is driven by the interaction between grammar complexity, iteration patterns, and solver architecture.
 
-Each method invokes the solver one or more times (until the algorithm converges). The total grammar cost — summing rules across all invocations — determines the overall computational budget per method:
+##### C Limitation: Grammar Size
 
-| Method     | Composition                                                              |
-|------------|--------------------------------------------------------------------------|
-| `DEF`      | 2\*`default`                                                             |
-| `PAR`      | 2\*`parity`                                                              |
-| `PAR2`     | 2\*`parity2`                                                             |
-| `PARUnl`   | 2\*`parity` + `project`                                                  |
-| `PARErase` | 2\*`parity`​ + `exclude` \* $n_b$                                         |
-| `PAR2E`    | 2\*`se`                                                                  |
-| `COM`      | 2\*`se` + `project` + `exclude` \* $n_b$                                 |
-| `PARD`     | `PAR`, then `default` \* $n_{uncertain}$                                 |
-| `COMD`     | `COM`, then `default` \* $n_{uncertain}$, then `COM` \* $n_{uncertain}'$ |
+The performance of the C implementation is directly determined by the number of rules in the grammar passed to the CFL reachability solver, as the computational complexity of each iteration step scales with grammar size. In the matrix-based solver, matrix multiplication operations are executed for each grammar rule; thus, execution time per iteration accumulates proportionally to the rule count.
 
-Here $n_{uncertain} = |R_{over}| − |R_{under}|$ is the number of pairs in the over-approximation not confirmed by the under-approximation after the initial global pass, and $n_{uncertain}' \leq n_{uncertain}$​ is the number of pairs remaining after the default per-pair pass. These quantities depend on the graph and grow with graph size, making `PARD` and especially `COMD` the most expensive methods on large inputs.
+The individual grammars used across all methods and their resulting rule counts in the C implementation are as follows:
 
-This cost structure explains the performance patterns observed across all three implementations, and will be referenced throughout the analysis below.
+| Grammar           | Standart number of rules in C implementation |
+|-------------------|----------------------------------------------|
+| `project_grammar` | 8                                            |
+| `default_grammar` | 10                                           |
+| `parity_grammar`  | 21                                           |
+| `parity2_grammar` | 71                                           |
+| `exclude_grammar` | 81                                           |
+| `se_grammar`      | 1428                                         |
 
-- **C leads** in methods characterized by low grammar complexity and computations that naturally reduce to sparse matrix operations. The `PAR` (C advantage: 1.8×) and `PAR2` (1.2×) methods benefit directly from the efficiency of the GraphBLAS library. C shows the greatest advantage in the `PARUnl` method (21×); this method includes the `project` grammar pass (comprising 8 rules). Furthermore, the Kotlin implementation handles the `project` grammar less efficiently than others due to the large number of descriptors it generates. While the COM method (C advantage: 4.1×) is faster overall in C, this advantage is largely driven by measurements using the droidkongfu graph; the combined grammar cost of se + project + exclude remains high regardless.
-- **Kotlin leads** in methods that employ complex grammars and involve multiple traversals of bracket labels or pairwise refinement of results. For simpler methods like `PARErase` and `PARD`, the advantage stems from the fact that extracting edges from path-finding results is a resource-intensive operation for GraphBLAS in C. The `PARErase` method (Kotlin advantage: 1.3×) executes the `parity` grammar once for each bracket label (a total of $n_b$ times). The `PARD` (1.5×) and `COMD` (1.2×) methods execute their respective grammars independently for each query node pair. The `COM` and `COMD` methods lag behind in most metrics due to the complexity of the grammars they employ. Conversely, the `PAR2E` method (1.3×) uses the `se` grammar—the most computationally expensive of the individual grammars—where the structural overhead inherent to GraphBLAS matrices outweighs the performance gains.
+##### Kotlin Limitation: UCFS Descriptor Equality
+
+The primary performance limitation of the Kotlin implementation stems from inefficient equality comparisons within UCFS. During parse forest construction and traversal, the solver frequently compares complex derivation structures. This issue manifests most severely in grammars producing large intermediate structures (`PARUnl`, multi-pass variants) but affects all grammars on sufficiently large inputs.
+
+##### Where C Leads
+
+C implementation leads in methods characterized by low grammar complexity and computations that naturally reduce to sparse matrix operations:
+
+- **`PAR` & `PAR2`:** The `PAR` (C advantage: 1.8×) and `PAR2` (1.2×) methods benefit directly from the efficiency of the GraphBLAS library.
+- **`PARUnl`:** C shows the greatest advantage in `PARUnl` (21×). This method adds the `project_grammar` pass (8 rules). Furthermore, the Kotlin implementation handles the `project_grammar` less efficiently than others due to the large number of descriptors it generates.
+- **`COM`:** While the `COM` method (C advantage: 4.1×) is faster overall in C, this advantage is largely driven by measurements using the droidkongfu graph; the combined grammar cost of `se_grammar` + `project_grammar` + `exclude_grammar` remains high regardless.
+
+##### Where Kotlin Leads
+
+Kotlin implementation leads in methods that employ complex grammars, involve multiple traversals of bracket labels, or require pairwise refinement of results:
+
+- **`PARErase` & `PARD`:** For methods like `PARErase` and `PARD`, Kotlin's advantage stems from the fact that extracting edges from path-finding results is a resource-intensive operation for GraphBLAS in C. The `PARErase` method (Kotlin advantage: 1.3×) executes the `parity_grammar` once for each bracket label (a total of $n_b$ times). The `PARD` method (1.5×) executes its grammar independently for each query node pair ($n_{uncertain}$ times).
+- **`COMD`:** The `COMD` method (Kotlin advantage: 1.2×) similarly executes its grammars independently for each query node pair. Kotlin handles iterations for each pair more efficiently than C.
+- **`PAR2E`:** The `PAR2E` method (Kotlin advantage: 1.3×) uses the `se_grammar` — the most computationally expensive of the individual grammars — where the structural overhead inherent to GraphBLAS matrices outweighs the performance gains.
+
+##### Summary
 
 The overall performance ranking thus depends on method structure: C leads on low-rule, matrix-friendly single-pass methods; Kotlin leads on high-iteration or per-pair methods; Go consistently finishes last.
 
@@ -377,7 +410,7 @@ The comparison was conducted on the [`taint_additional dataset`](benchmark/taint
 | **Grammar `COM`:**                                                                    | **Grammar `COMD`:**                                                                 |
 | <img alt="COM" src="benchmark/results/taint_additional/all_time_comparison.png">          | <img alt="COMD" src="benchmark/results/taint_additional/on-demand_time_comparison.png"> |
 
-#### Go analysis
+#### Go Implementation Limits
 
 The Go implementation completed successfully only on 4 benchmarks: 2 benchmarks with the `PAR` method for scipiex and simhosy, where it significantly loses to other implementations (the Kotlin implementation wins by 87× and 81×, while the C implementation wins by 58× and 48×, respectively) and with `PARUnl` on the same graphs, where it significantly loses to the C implementation (the losses are 69× and 56×).
 
@@ -385,11 +418,11 @@ The Go implementation completed successfully only on 4 benchmarks: 2 benchmarks 
 
 On the larger taint_additional dataset, both implementations encounter scalability limits — `OOM` and `T/O` failures become frequent, especially on skullkey and phospy. The grammar-complexity-driven pattern from taint holds and becomes more pronounced:
 
-- `PARUnl`: C completes on all three feasible graphs (phospy in 3087s, scipiex in 69s, simhosy in 31s), while Kotlin times out on all of them.
-- `PAR2E` and `COM`: C completes scipiex and simhosy for `PAR2E` 1.9 and 1.04 times faster, respectively, while simhosy completes for `COM` (Kotlin timeouts).
-- `PAR`: C is faster on phospy (1.1×), but slower on scipiex (1.5×) and simhosy (1.65×). Although the `parity` grammar is cheap for both implementations, profiling of the C implementation on scipiex and simhosy reveals that, alongside the edge extraction overhead discussed earlier, a notable portion of execution time is spent on thread management, suggesting that the parallelism overhead of GraphBLAS becomes more pronounced on graphs of this size. For phospy, the larger graph size likely means that the computational work per iteration is sufficient to amortise these overheads, which may explain C's slight advantage there.
-- `PAR2`, `PARErase`, `PARD`: For all three methods, Kotlin outperforms C on graphs where both complete.
-- `COMD`: Neither implementation completes any graph.
+- **`PARUnl`**: C completes on all three feasible graphs (phospy in 3087s, scipiex in 69s, simhosy in 31s), while Kotlin times out on all of them.
+- **`PAR2E` & `COM`**: C completes scipiex and simhosy for `PAR2E` 1.9 and 1.04 times faster, respectively, while simhosy completes for `COM` (Kotlin timeouts).
+- **`PAR`**: C is faster on phospy (1.1×), but slower on scipiex (1.5×) and simhosy (1.65×). Although the `parity` grammar is cheap for both implementations, profiling of the C implementation on scipiex and simhosy reveals that, alongside the edge extraction overhead discussed earlier, a notable portion of execution time is spent on thread management, suggesting that the parallelism overhead of GraphBLAS becomes more pronounced on graphs of this size. For phospy, the larger graph size likely means that the computational work per iteration is sufficient to amortise these overheads, which may explain C's slight advantage there.
+- **`PAR2`, `PARErase`, `PARD`**: For all three methods, Kotlin outperforms C on graphs where both complete.
+- **`COMD`**: Neither implementation completes any graph.
 
 #### Performance Hierarchy (only for successful measurements)
 
@@ -413,11 +446,10 @@ On the larger taint_additional dataset, both implementations encounter scalabili
 
 ### Summary and Conclusions
 
-1. **C vs Go:** The C implementation outperforms (18.8×) Go across all eight methods on the datasets considered. The advantage is largest for low-rule grammars, where GraphBLAS sparse matrix operations provide the greatest relative benefit over Go.
+1. **C vs Go:** The C implementation outperforms (19.6×) Go across all eight methods on the datasets considered. The advantage is largest for low-rule grammars, where GraphBLAS sparse matrix operations provide the greatest relative benefit over Go.
 2. **Kotlin vs Go:** The Kotlin GLL-based implementation provides an average speedup (13.9×) over Go in benchmarks where both implementations succeed.
 3. **C vs Kotlin:** Neither implementation dominates universally. C leads on methods with small grammars (`PAR`, `PAR2`, `PARUnl`), with the largest gap on `PARUnl` (21×). Kotlin leads on methods dominated by high per-label (`PARErase`) or per-pair iteration (`PARD`, `COMD`) and in `PAR2E` on small graphs.
-4. **Correctness preserved:** Identical approximation results across implementations validate the semantic fidelity of the UCFS-based approach.
-5. **Systemic equals bottleneck in Kotlin:** The primary performance limitation stems from inefficient equality comparisons within UCFS. During parse forest construction and traversal, the solver frequently compares complex derivation structures. This issue manifests most severely in grammars producing large intermediate structures (`PARUnl`, multi-pass variants) but affects all grammars on sufficiently large inputs.
+4. **Correctness preserved:** Identical approximation results in all implementations confirm the semantic accuracy of the implemented approaches.
 
 <!-- ## Data set analysis
 
