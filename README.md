@@ -107,6 +107,15 @@ git submodule update --init
 ./gradlew test
 ```
 
+### Building against UCFS-AI-dev (ucfs-main)
+
+`ucfs-main/` is a separate Gradle build (Kotlin 2.4.0) that compiles the same `src/main` against `org.ucfs:solver` of [UCFS-AI-dev](https://github.com/UsatovPavel/UCFS-AI-dev) instead of `libs/solver-new.jar`, runs the repository tests (except `TestExtractEdgesFromSppfResult` and its SPPF fixtures, which use the PR #50 node classes) and publishes `org.cfl_idr_with_gll:cfl-idr-with-gll:0.1.0-ai-SNAPSHOT`:
+
+```bash
+./gradlew -p ucfs-main -PucfsRepo=<maven repo with org.ucfs:solver> test publishLibPublicationToMavenLocal \
+    -Dmaven.repo.local=<dir>
+```
+
 ## Usage Examples
 
 ### CLI
